@@ -1,5 +1,20 @@
 const { v4: uuidv4 } = require('uuid');
 
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const { 
+  DynamoDBDocumentClient, 
+  QueryCommand, 
+  PutCommand,
+  DeleteCommand,
+  UpdateCommand
+} = require("@aws-sdk/lib-dynamodb");
+
+const client = new DynamoDBClient({});
+const docClient = DynamoDBDocumentClient.from(client);
+
+const TABLE_NAME = process.env.TABLE_NAME;
+const INDEX_NAME = process.env.INDEX_NAME;
+
 export const handler = async (event: any = {}): Promise<any> => {
     console.log('Request received:', event);
 
@@ -26,9 +41,22 @@ export const handler = async (event: any = {}): Promise<any> => {
                     return createNewItem(body.title, userId);
                 }
             case 'DELETE':
-            // TO IMPLEMENT
+                // Handle DELETE /todos/{id} (delete specific todo)
+                console.log('delete method');  
+                return deleteItem(event.pathParameters.id)
             case 'PATCH':
-            // TO IMPLEMENT
+            // Handle PATCH /todos/{id} (update specific todo)
+              console.log('patch method') ;
+          
+              const body = JSON.parse(event.body);
+              if (body.title) {
+                console.log('updating item title');
+                return updateItemTitle(event.pathParameters.id, body.title)
+              
+              } else if (body.completed == true || body.completed == false) {
+                return completeItem(event.pathParameters.id, body.completed)
+              }
+              break;
             default:
                 return createResponse(404, 'Method not found');
         }
@@ -40,9 +68,29 @@ export const handler = async (event: any = {}): Promise<any> => {
 
 async function getAllItems(id: string) {
     console.log('get all items');
-     
+    
+    //Get all items
+    const params = {
+        TableName: TABLE_NAME,
+        KeyConditionExpression: 'userId = :userId',
+        ExpressionAttributeValues: {
+          ':userId': id
+        },
+    };
+    
+    console.log(params);
+ 
+   const getCommand = new QueryCommand(params);
+   const getResponse = await docClient.send(getCommand);
+
+   if (!getResponse.Items) {
+    return createResponse(404, 'Item not found')
+  }
+
+  return createResponse(200, getResponse.Items)
+
      // FAKE IT
-     const fakeItems = [
+     /*const fakeItems = [
          {
              userId: id,
              createdAt: Date.now().toString(),
@@ -57,9 +105,9 @@ async function getAllItems(id: string) {
              title: 'Buy eggs',
              completed: false
          }
-     ]
+     ] 
  
-     return createResponse(200, fakeItems)
+     return createResponse(200, fakeItems) */
 }
 
 async function createNewItem(title: string, userId: string) {
@@ -73,9 +121,128 @@ async function createNewItem(title: string, userId: string) {
       completed: false
     }
   
-    // FAKE IT
+    const params = {
+        TableName: TABLE_NAME,
+        Item: {
+          userId: newItem.userId,
+          createdAt: newItem.createdAt,
+          todoId: newItem.todoId,
+          title: newItem.title,
+          completed: newItem.completed
+        }
+    };
+
+    console.log(params);
+    const putCommand = new PutCommand(params);
+    await docClient.send(putCommand);
   
     return createResponse(200, newItem)
+}
+
+async function getItemFromGSI(todoId: string) {
+  console.log('get item from GSI');
+
+  const queryParams = {
+    TableName: TABLE_NAME,
+    IndexName: INDEX_NAME,
+    KeyConditionExpression: 'todoId = :todoId',
+    ExpressionAttributeValues: {
+      ':todoId': todoId
+    },
+  };
+
+  console.log(queryParams);
+  const queryCommand = new QueryCommand(queryParams);
+  const queryResponse = await docClient.send(queryCommand);
+
+  if (!queryResponse.Items || queryResponse.Items.length === 0) {
+    return createResponse(404, 'Item not found')
+  }
+
+  return queryResponse.Items[0]
+}
+
+async function deleteItem(todoId: string) {
+  console.log('delete item');
+
+  // First we find this item in the GSI
+  const item = await getItemFromGSI(todoId);
+
+  const itemKey = {
+    userId: item.userId,
+    createdAt: item.createdAt
+  }
+
+  // Then we delete the item
+  const deleteParams = {
+    TableName: TABLE_NAME,
+    Key: itemKey
+  };
+
+  console.log(deleteParams);
+
+  const deleteCommand = new DeleteCommand(deleteParams);
+  await docClient.send(deleteCommand);
+
+  return createResponse(200, itemKey)
+}
+
+async function updateItemTitle(todoId: string, title: string) {
+  console.log('update item title');
+
+  const item = await getItemFromGSI(todoId);
+
+  const itemKey = {
+    userId: item.userId,
+    createdAt: item.createdAt
+  }
+
+  const params = {
+    TableName: TABLE_NAME,
+    Key: itemKey,
+    UpdateExpression: 'set title = :title',
+    ExpressionAttributeValues: {
+      ':title': title
+    },
+    ReturnValues: 'ALL_NEW'
+  };
+
+  console.log(params);
+
+  const updateCommand = new UpdateCommand(params);
+  await docClient.send(updateCommand);
+
+  item.title = title;
+  return createResponse(200, item)
+}
+
+async function completeItem(todoId: string, completed: boolean) {
+  console.log('complete item');
+
+  const item = await getItemFromGSI(todoId);
+
+  const itemKey = {
+    userId: item.userId,
+    createdAt: item.createdAt
+  }
+
+  const params = {
+    TableName: TABLE_NAME,
+    Key: itemKey,
+    UpdateExpression: 'set completed = :completed',
+    ExpressionAttributeValues: {
+      ':completed': completed
+    },
+    ReturnValues: 'ALL_NEW'
+  };
+
+  console.log(params);
+
+  const updateCommand = new UpdateCommand(params);
+  await docClient.send(updateCommand);
+
+  item.completed = completed
+  return createResponse(200, item)
 }
 
 function createResponse(statusCode: number, body: any) {
@@ -85,6 +252,10 @@ function createResponse(statusCode: number, body: any) {
       statusCode: statusCode,
       headers: {
         "Content-Type": "application/json",
+        'Access-Control-Allow-Origin': '*', // Restrict this in production
+        'Access-Control-Allow-Credentials': true,
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token',
+        'Access-Control-Allow-Methods': 'GET,POST,DELETE,PATCH,OPTIONS'
       },
       body: JSON.stringify(body)
     }
