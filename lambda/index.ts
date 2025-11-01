@@ -25,10 +25,17 @@ export const handler = async (event: any = {}): Promise<any> => {
         console.log(httpMethod);
         console.log(path);
 
-         //FAKE USER ID
-         const userId = 'MR_FAKE';
+        //FAKE USER ID
+        //const userId = 'MR_FAKE';
+        // Get Cognito user information from thee event
+        const userId = event.requestContext.authorizer?.claims['cognito:username'];
+        // const cognitoUsername = event.requestContext.authorizer?.claims['cognito:username'];
+        // const email  = event.requestContext.authorizer?.claims.email;
+        console.log(userId);
+        // console.log(email);
 
-         switch (httpMethod) {
+
+        switch (httpMethod) {
             case 'GET':
                 console.log('GET all TODOs');
                 if (path === '/todos') {
@@ -59,7 +66,7 @@ export const handler = async (event: any = {}): Promise<any> => {
               break;
             default:
                 return createResponse(404, 'Method not found');
-        }
+      }
     } catch (error) {
         console.error(error);
         return createResponse(500, 'Internal server error');
